@@ -7,9 +7,11 @@ from typing import AsyncIterator, Optional
 
 import aiohttp
 from bs4 import BeautifulSoup
+from loguru import logger
 
 from duetto.config import settings
 from duetto.models import Alert, AlertType, AlertPriority
+from duetto.utils import LRUCache
 from .base import BaseCollector
 
 
@@ -23,7 +25,7 @@ class FDACollector(BaseCollector):
 
     def __init__(self):
         self._running = False
-        self._seen_ids: set[str] = set()
+        self._seen_ids = LRUCache[str](capacity=10000)
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def start(self) -> None:
@@ -33,12 +35,14 @@ class FDACollector(BaseCollector):
         }
         self._session = aiohttp.ClientSession(headers=headers)
         self._running = True
+        logger.info("FDA collector started")
 
     async def stop(self) -> None:
         """Stop the collector."""
         self._running = False
         if self._session:
             await self._session.close()
+        logger.info("FDA collector stopped")
 
     async def collect(self) -> AsyncIterator[Alert]:
         """Collect alerts from FDA sources."""
@@ -50,13 +54,17 @@ class FDACollector(BaseCollector):
             async for alert in self._fetch_approvals():
                 yield alert
         except Exception as e:
-            print(f"Error fetching FDA approvals: {e}")
+            logger.error(f"Error fetching FDA approvals: {e}")
 
     async def _fetch_approvals(self) -> AsyncIterator[Alert]:
         """Fetch recent FDA drug approvals."""
+        if not self._session:
+            return
+
         try:
             async with self._session.get(FDA_APPROVALS_URL) as response:
                 if response.status != 200:
+                    logger.warning(f"Failed to fetch FDA approvals: HTTP {response.status}")
                     return
 
                 html = await response.text()
@@ -65,6 +73,7 @@ class FDACollector(BaseCollector):
                 # Find the approvals table
                 table = soup.find("table")
                 if not table:
+                    logger.warning("FDA approvals table not found on page. Layout may have changed.")
                     return
 
                 rows = table.find_all("tr")[1:]  # Skip header
@@ -75,12 +84,11 @@ class FDACollector(BaseCollector):
                         continue
 
                     alert = self._parse_approval_row(cells)
-                    if alert and alert.id not in self._seen_ids:
-                        self._seen_ids.add(alert.id)
+                    if alert and self._seen_ids.add(alert.id):
                         yield alert
 
         except Exception as e:
-            print(f"Error parsing FDA approvals: {e}")
+            logger.error(f"Error parsing FDA approvals: {e}")
 
     def _parse_approval_row(self, cells) -> Optional[Alert]:
         """Parse a row from FDA approvals table."""
@@ -116,5 +124,5 @@ class FDACollector(BaseCollector):
                 },
             )
         except Exception as e:
-            print(f"Error parsing FDA row: {e}")
+            logger.error(f"Error parsing FDA row: {e}")
             return None

@@ -83,24 +83,12 @@ async def get_status():
 def main():
     """Run the server."""
     import uvicorn
+    from loguru import logger
 
-    print(f"""
-    ╔═══════════════════════════════════════════════════════════╗
-    ║                                                           ║
-    ║   Duetto - Real-Time Market Alerts                        ║
-    ║   Free KairAlert Alternative                              ║
-    ║                                                           ║
-    ║   Server: http://{settings.host}:{settings.port}                          ║
-    ║   WebSocket: ws://{settings.host}:{settings.port}/ws                       ║
-    ║                                                           ║
-    ║   Data Sources:                                           ║
-    ║   - SEC EDGAR (8-K, S-3, Form 4)                          ║
-    ║   - FDA Approvals                                         ║
-    ║                                                           ║
-    ║   Poll Interval: {settings.sec_poll_interval}s                                       ║
-    ║                                                           ║
-    ╚═══════════════════════════════════════════════════════════╝
-    """)
+    logger.info("Starting Duetto Server...")
+    logger.info(f"Server available at http://{settings.host}:{settings.port}")
+    logger.info(f"WebSocket available at ws://{settings.host}:{settings.port}/ws")
+    logger.info(f"Poll Interval: {settings.sec_poll_interval}s")
 
     uvicorn.run(
         "duetto.main:app",

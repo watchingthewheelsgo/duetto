@@ -9,9 +9,11 @@ from typing import AsyncIterator, Optional
 import aiohttp
 import feedparser
 from bs4 import BeautifulSoup
+from loguru import logger
 
 from duetto.config import settings
 from duetto.models import Alert, AlertType, AlertPriority
+from duetto.utils import LRUCache
 from .base import BaseCollector
 
 
@@ -40,7 +42,7 @@ class SECEdgarCollector(BaseCollector):
 
     def __init__(self):
         self._running = False
-        self._seen_ids: set[str] = set()
+        self._seen_ids = LRUCache[str](capacity=10000)
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def start(self) -> None:
@@ -48,12 +50,14 @@ class SECEdgarCollector(BaseCollector):
         headers = {"User-Agent": settings.sec_user_agent}
         self._session = aiohttp.ClientSession(headers=headers)
         self._running = True
+        logger.info("SEC EDGAR collector started")
 
     async def stop(self) -> None:
         """Stop the collector."""
         self._running = False
         if self._session:
             await self._session.close()
+        logger.info("SEC EDGAR collector stopped")
 
     async def collect(self) -> AsyncIterator[Alert]:
         """Collect alerts from SEC EDGAR RSS feeds."""
@@ -65,36 +69,41 @@ class SECEdgarCollector(BaseCollector):
                 async for alert in self._fetch_feed(form_type, feed_url):
                     yield alert
             except Exception as e:
-                print(f"Error fetching {form_type} feed: {e}")
+                logger.error(f"Error fetching {form_type} feed: {e}")
 
             # Rate limiting
             await asyncio.sleep(settings.sec_rate_limit)
 
     async def _fetch_feed(self, form_type: str, feed_url: str) -> AsyncIterator[Alert]:
         """Fetch and parse a single RSS feed."""
-        async with self._session.get(feed_url) as response:
-            if response.status != 200:
-                return
+        if not self._session:
+            return
 
-            content = await response.text()
-            feed = feedparser.parse(content)
+        try:
+            async with self._session.get(feed_url) as response:
+                if response.status != 200:
+                    logger.warning(f"Failed to fetch {form_type} feed: HTTP {response.status}")
+                    return
 
-            for entry in feed.entries:
-                alert_id = self._generate_id(entry)
+                content = await response.text()
+                
+                # Run feedparser in a separate thread to avoid blocking the event loop
+                loop = asyncio.get_running_loop()
+                feed = await loop.run_in_executor(None, feedparser.parse, content)
 
-                # Skip already seen entries
-                if alert_id in self._seen_ids:
-                    continue
+                for entry in feed.entries:
+                    alert_id = self._generate_id(entry)
 
-                self._seen_ids.add(alert_id)
+                    # Skip already seen entries using LRU Cache
+                    if not self._seen_ids.add(alert_id):
+                        continue
 
-                # Keep seen_ids from growing too large
-                if len(self._seen_ids) > 10000:
-                    self._seen_ids = set(list(self._seen_ids)[-5000:])
+                    alert = self._parse_entry(form_type, entry, alert_id)
+                    if alert:
+                        yield alert
 
-                alert = self._parse_entry(form_type, entry, alert_id)
-                if alert:
-                    yield alert
+        except Exception as e:
+            logger.exception(f"Exception during {form_type} feed fetch/parse")
 
     def _generate_id(self, entry: dict) -> str:
         """Generate unique ID for an entry."""
@@ -103,41 +112,45 @@ class SECEdgarCollector(BaseCollector):
 
     def _parse_entry(self, form_type: str, entry: dict, alert_id: str) -> Optional[Alert]:
         """Parse RSS entry into Alert."""
-        title = entry.get("title", "")
-        summary = entry.get("summary", "")
-        link = entry.get("link", "")
+        try:
+            title = entry.get("title", "")
+            summary = entry.get("summary", "")
+            link = entry.get("link", "")
 
-        # Extract company name and ticker from title
-        # Format: "8-K - Company Name (0001234567) (Filer)"
-        company, ticker = self._extract_company_info(title)
+            # Extract company name and ticker from title
+            # Format: "8-K - Company Name (0001234567) (Filer)"
+            company, ticker = self._extract_company_info(title)
 
-        # Determine alert type
-        alert_type = self._get_alert_type(form_type)
+            # Determine alert type
+            alert_type = self._get_alert_type(form_type)
 
-        # Determine priority based on content
-        priority = self._determine_priority(title, summary)
+            # Determine priority based on content
+            priority = self._determine_priority(title, summary)
 
-        # Parse timestamp
-        timestamp = datetime.utcnow()
-        if "updated_parsed" in entry:
-            try:
-                timestamp = datetime(*entry.updated_parsed[:6])
-            except Exception:
-                pass
+            # Parse timestamp
+            timestamp = datetime.utcnow()
+            if "updated_parsed" in entry:
+                try:
+                    timestamp = datetime(*entry.updated_parsed[:6])
+                except Exception:
+                    logger.warning(f"Could not parse timestamp for entry: {title}")
 
-        return Alert(
-            id=alert_id,
-            type=alert_type,
-            priority=priority,
-            ticker=ticker,
-            company=company,
-            title=f"{form_type}: {company}",
-            summary=self._clean_summary(summary),
-            url=link,
-            source="SEC EDGAR",
-            timestamp=timestamp,
-            raw_data={"form_type": form_type, "entry": dict(entry)},
-        )
+            return Alert(
+                id=alert_id,
+                type=alert_type,
+                priority=priority,
+                ticker=ticker,
+                company=company,
+                title=f"{form_type}: {company}",
+                summary=self._clean_summary(summary),
+                url=link,
+                source="SEC EDGAR",
+                timestamp=timestamp,
+                raw_data={"form_type": form_type, "entry": dict(entry)},
+            )
+        except Exception as e:
+            logger.error(f"Error parsing entry {alert_id}: {e}")
+            return None
 
     def _extract_company_info(self, title: str) -> tuple[str, Optional[str]]:
         """Extract company name from SEC filing title."""
@@ -146,6 +159,7 @@ class SECEdgarCollector(BaseCollector):
         company = match.group(1).strip() if match else title
 
         # Try to find ticker (not always in SEC data)
+        # TODO: Implement a reliable Ticker Mapper service
         ticker = None
         return company, ticker
 
@@ -176,6 +190,9 @@ class SECEdgarCollector(BaseCollector):
         """Clean HTML from summary."""
         if not summary:
             return ""
-        soup = BeautifulSoup(summary, "lxml")
-        text = soup.get_text(separator=" ", strip=True)
-        return text[:500] if len(text) > 500 else text
+        try:
+            soup = BeautifulSoup(summary, "lxml")
+            text = soup.get_text(separator=" ", strip=True)
+            return text[:500] if len(text) > 500 else text
+        except Exception:
+            return summary[:500]
