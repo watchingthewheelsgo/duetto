@@ -1,0 +1,25 @@
+[project]
+name = "duetto"
+version = "0.1.0"
+description = "Free KairAlert alternative - Real-time market news alerts for SEC filings, FDA events"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "feedparser>=6.0.0",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "websockets>=12.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "python-dateutil>=2.8.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+]
+
+[project.scripts]
+duetto = "duetto.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
