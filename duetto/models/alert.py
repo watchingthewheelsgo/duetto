@@ -18,6 +18,7 @@ class AlertType(str, Enum):
     FDA_PDUFA = "fda_pdufa"  # FDA action dates
     FDA_TRIAL = "fda_trial"  # Clinical trial results
     PR_NEWS = "pr_news"  # Press releases
+    STOCK_MOVEMENT = "stock_movement"  # Significant price movement
 
 
 class AlertPriority(str, Enum):

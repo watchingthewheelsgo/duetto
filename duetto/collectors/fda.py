@@ -16,8 +16,8 @@ from .base import BaseCollector
 
 
 # FDA data sources
-FDA_APPROVALS_URL = "https://www.fda.gov/drugs/development-approval-process-drugs/novel-drug-approvals-fda"
-FDA_CALENDAR_RSS = "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds"
+# We will construct yearly URLs dynamically, e.g. https://www.fda.gov/drugs/novel-drug-approvals-fda/novel-drug-approvals-2025
+FDA_BASE_URL = "https://www.fda.gov/drugs/novel-drug-approvals-fda/novel-drug-approvals"
 
 
 class FDACollector(BaseCollector):
@@ -61,36 +61,51 @@ class FDACollector(BaseCollector):
         if not self._session:
             return
 
-        try:
-            async with self._session.get(FDA_APPROVALS_URL) as response:
-                if response.status != 200:
-                    logger.warning(f"Failed to fetch FDA approvals: HTTP {response.status}")
-                    return
+        # Try current year first, then previous year if needed (e.g. early Jan)
+        current_year = datetime.now().year
+        years_to_check = [current_year, current_year - 1]
 
-                html = await response.text()
-                soup = BeautifulSoup(html, "lxml")
-
-                # Find the approvals table
-                table = soup.find("table")
-                if not table:
-                    logger.warning("FDA approvals table not found on page. Layout may have changed.")
-                    return
-
-                rows = table.find_all("tr")[1:]  # Skip header
-
-                for row in rows[:20]:  # Only process recent entries
-                    cells = row.find_all("td")
-                    if len(cells) < 4:
+        for year in years_to_check:
+            url = f"{FDA_BASE_URL}-{year}"
+            try:
+                async with self._session.get(url) as response:
+                    if response.status != 200:
+                        logger.warning(f"Failed to fetch FDA approvals for {year}: HTTP {response.status}")
                         continue
 
-                    alert = self._parse_approval_row(cells)
-                    if alert and self._seen_ids.add(alert.id):
-                        yield alert
+                    html = await response.text()
+                    soup = BeautifulSoup(html, "lxml")
 
-        except Exception as e:
-            logger.error(f"Error parsing FDA approvals: {e}")
+                    # Find the approvals table
+                    # The table might be nested in a div
+                    table = soup.find("table")
+                    if not table:
+                        logger.warning(f"FDA approvals table not found on {year} page.")
+                        continue
 
-    def _parse_approval_row(self, cells) -> Optional[Alert]:
+                    rows = table.find_all("tr")[1:]  # Skip header
+
+                    count = 0
+                    for row in rows[:20]:  # Only process recent entries
+                        cells = row.find_all("td")
+                        if len(cells) < 4:
+                            continue
+
+                        alert = self._parse_approval_row(cells, url)
+                        # Pass url to parse_row to use as base for relative links
+                        if alert and self._seen_ids.add(alert.id):
+                            yield alert
+                            count += 1
+                    
+                    if count > 0:
+                        # If we found data for the current year, we might not need to check previous year
+                        # unless we want to be very thorough. For now, let's stop if we found data.
+                        break
+
+            except Exception as e:
+                logger.error(f"Error parsing FDA approvals for {year}: {e}")
+
+    def _parse_approval_row(self, cells, base_url: str) -> Optional[Alert]:
         """Parse a row from FDA approvals table."""
         try:
             drug_name = cells[0].get_text(strip=True)
@@ -103,7 +118,12 @@ class FDACollector(BaseCollector):
 
             # Find link if available
             link = cells[0].find("a")
-            url = f"https://www.fda.gov{link['href']}" if link and link.get("href") else FDA_APPROVALS_URL
+            if link and link.get("href"):
+                url = link['href']
+                if url.startswith("/"):
+                    url = f"https://www.fda.gov{url}"
+            else:
+                url = base_url
 
             return Alert(
                 id=alert_id,

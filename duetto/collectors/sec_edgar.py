@@ -13,7 +13,7 @@ from loguru import logger
 
 from duetto.config import settings
 from duetto.models import Alert, AlertType, AlertPriority
-from duetto.utils import LRUCache
+from duetto.utils import LRUCache, get_ticker_mapper
 from .base import BaseCollector
 
 
@@ -44,12 +44,19 @@ class SECEdgarCollector(BaseCollector):
         self._running = False
         self._seen_ids = LRUCache[str](capacity=10000)
         self._session: Optional[aiohttp.ClientSession] = None
+        self._ticker_mapper = None  # Will be loaded in start()
+        self._ticker_cache: dict[str, Optional[str]] = {}  # CIK -> ticker cache
 
     async def start(self) -> None:
         """Start the collector."""
         headers = {"User-Agent": settings.sec_user_agent}
         self._session = aiohttp.ClientSession(headers=headers)
         self._running = True
+
+        # Load ticker mapper
+        if self._ticker_mapper is None:
+            self._ticker_mapper = await get_ticker_mapper()
+
         logger.info("SEC EDGAR collector started")
 
     async def stop(self) -> None:
@@ -153,14 +160,30 @@ class SECEdgarCollector(BaseCollector):
             return None
 
     def _extract_company_info(self, title: str) -> tuple[str, Optional[str]]:
-        """Extract company name from SEC filing title."""
+        """Extract company name and ticker from SEC filing title."""
         # Pattern: "8-K - Company Name (CIK) (Filer)"
-        match = re.search(r"- (.+?) \(\d+\)", title)
-        company = match.group(1).strip() if match else title
+        cik_match = re.search(r"\((\d+)\)", title)
+        name_match = re.search(r"- (.+?) \(\d+\)", title)
 
-        # Try to find ticker (not always in SEC data)
-        # TODO: Implement a reliable Ticker Mapper service
+        cik = cik_match.group(1) if cik_match else None
+        company = name_match.group(1).strip() if name_match else title
+
+        # Try to get ticker from CIK
         ticker = None
+        if cik and self._ticker_mapper:
+            # Check cache first
+            if cik in self._ticker_cache:
+                ticker = self._ticker_cache[cik]
+            else:
+                ticker = self._ticker_mapper.cik_to_ticker(cik)
+                self._ticker_cache[cik] = ticker
+
+            # Try to get company name from ticker mapper for consistency
+            if ticker:
+                mapped_name = self._ticker_mapper.cik_to_name(cik)
+                if mapped_name:
+                    company = mapped_name
+
         return company, ticker
 
     def _get_alert_type(self, form_type: str) -> AlertType:
