@@ -20,9 +20,12 @@ from duetto.processors.filter import FilterProcessor
 from duetto.notifiers.base import BaseNotifier
 from duetto.notifiers.feishu import FeishuNotifier
 
+from duetto.server import WebSocketManager
+
 class DuettoEngine:
-    def __init__(self):
+    def __init__(self, ws_manager: WebSocketManager = None):
         self.running = False
+        self.ws_manager = ws_manager
         
         # 1. Collectors
         self.collectors: List[BaseCollector] = []
@@ -77,7 +80,11 @@ class DuettoEngine:
         if not processed_alert:
             return # Dropped by filter or dedup
             
-        # 2. Notify
+        # 2. Broadcast to UI
+        if self.ws_manager:
+            await self.ws_manager.broadcast(processed_alert)
+            
+        # 3. Notify External
         for notifier in self.notifiers:
             try:
                 template = notifier.create_template(processed_alert)

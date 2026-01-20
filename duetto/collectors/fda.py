@@ -10,7 +10,8 @@ from bs4 import BeautifulSoup
 from loguru import logger
 
 from duetto.config import settings
-from duetto.models import Alert, AlertType, AlertPriority
+from duetto.config import settings
+from duetto.schemas import Alert, AlertType, AlertPriority
 from duetto.utils import LRUCache
 from .base import BaseCollector
 
