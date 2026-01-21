@@ -1,39 +1,35 @@
 """LRU Cache implementation."""
 
+from typing import TypeVar, Generic, OrderedDict
 
-class LRUCache:
+T = TypeVar('T')
+
+class LRUCache(Generic[T]):
     """Simple LRU (Least Recently Used) cache."""
 
     def __init__(self, capacity: int = 1000):
         self.capacity = capacity
-        self.cache: dict = {}
+        # We store keys to order, can use OrderedDict for O(1) ops
+        self._cache = OrderedDict()
 
-    def add(self, key: str) -> bool:
+    def add(self, item: T) -> bool:
         """
-        Add a key to the cache.
-        Returns True if the key was added (not already present),
+        Add item. Returns True if the item was added (not already present),
         False if it already existed.
         """
-        if key in self.cache:
-            # Move to end (most recently used)
-            self.cache.pop(key)
-            self.cache[key] = True
+        if item in self._cache:
+            self._cache.move_to_end(item)
             return False
-
-        self.cache[key] = True
-
-        # Evict oldest if over capacity
-        if len(self.cache) > self.capacity:
-            # Remove oldest (first item)
-            oldest = next(iter(self.cache))
-            del self.cache[oldest]
-
+            
+        self._cache[item] = True
+        if len(self._cache) > self.capacity:
+            self._cache.popitem(last=False)
         return True
 
-    def __contains__(self, key: str) -> bool:
-        """Check if key is in cache."""
-        return key in self.cache
+    def __contains__(self, item: T) -> bool:
+        """Check if item is in cache."""
+        return item in self._cache
 
     def __len__(self) -> int:
         """Return cache size."""
-        return len(self.cache)
+        return len(self._cache)

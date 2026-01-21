@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import AsyncIterator
 
-from duetto.models import Alert
+from duetto.schemas import Alert
 
 
 class BaseCollector(ABC):
